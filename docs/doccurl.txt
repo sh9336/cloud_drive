@@ -1,0 +1,311 @@
+Below is a **clean, production-ready cURL documentation** for your API, rewritten to be **concise, consistent, and copy-paste friendly**.
+No logic is changed — this is purely **cleanup + structure** so it can live as `API_TESTING.md`.
+
+---
+
+# 🧪 File Storage API – cURL Testing Guide
+
+**Base URL:** `http://localhost:8081`
+**Auth:** JWT (Bearer)
+
+Replace placeholders when needed:
+
+* `<ADMIN_ACCESS_TOKEN>`
+* `<TENANT_ACCESS_TOKEN>`
+* `<TENANT_ID>`
+* `<TOKEN_ID>`
+* `<FILE_ID>`
+
+---
+
+## 1️⃣ Health & Readiness
+
+### Health
+
+```bash
+curl http://localhost:8081/health
+```
+
+### Readiness
+
+```bash
+curl http://localhost:8081/ready
+```
+
+---
+
+## 2️⃣ Authentication
+
+### Admin Login
+
+```bash
+curl -X POST http://localhost:8081/api/v1/auth/admin/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@example.com",
+    "password": "ADMIN_PASSWORD"
+  }'
+```
+
+### Tenant Login
+
+```bash
+curl -X POST http://localhost:8081/api/v1/auth/tenant/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "tenant@example.com",
+    "password": "TENANT_PASSWORD"
+  }'
+```
+
+### Refresh Token
+
+```bash
+curl -X POST http://localhost:8081/api/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "REFRESH_TOKEN"
+  }'
+```
+
+### Logout
+
+```bash
+curl -X POST http://localhost:8081/api/v1/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "REFRESH_TOKEN"
+  }'
+```
+
+---
+
+## 3️⃣ Tenant Management (Admin)
+
+### Create Tenant
+
+```bash
+curl -X POST http://localhost:8081/api/v1/admin/tenants \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "tenant1@example.com",
+    "full_name": "Test Tenant",
+    "company_name": "Test Company"
+  }'
+```
+
+### List Tenants
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/admin/tenants
+```
+
+### Get Tenant
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/admin/tenants/<TENANT_ID>
+```
+
+### Reset Tenant Password
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/admin/tenants/<TENANT_ID>/reset-password
+```
+
+### Enable / Disable Tenant
+
+```bash
+curl -X PATCH http://localhost:8081/api/v1/admin/tenants/<TENANT_ID>/status \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "is_active": false,
+    "disabled_reason": "Subscription expired"
+  }'
+```
+
+---
+
+## 4️⃣ Sync Token Management
+
+### Create Sync Token (Admin)
+
+```bash
+curl -X POST http://localhost:8081/api/v1/admin/sync-tokens \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "<TENANT_ID>",
+    "name": "Scheduler-Sync",
+    "can_read": true,
+    "can_write": false,
+    "can_delete": false,
+    "expires_in_days": 365
+  }'
+```
+
+### List All Sync Tokens (Admin)
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/admin/sync-tokens
+```
+
+### Get Sync Token by ID
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/admin/sync-tokens/<TOKEN_ID>
+```
+
+### Rotate Sync Token
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/admin/sync-tokens/<TOKEN_ID>/rotate
+```
+
+### Delete Sync Token
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/admin/sync-tokens/<TOKEN_ID>
+```
+
+### Sync Token Stats
+
+```bash
+curl -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/admin/sync-tokens/<TOKEN_ID>/stats
+```
+
+---
+
+## 5️⃣ Sync Tokens (Tenant)
+
+### List Tenant Sync Tokens
+
+```bash
+curl -H "Authorization: Bearer <TENANT_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/tenant/sync-tokens
+```
+
+### Get Tenant Sync Token
+
+```bash
+curl -H "Authorization: Bearer <TENANT_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/tenant/sync-tokens/<TOKEN_ID>
+```
+
+### Tenant Sync Token Stats
+
+```bash
+curl -H "Authorization: Bearer <TENANT_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/tenant/sync-tokens/<TOKEN_ID>/stats
+```
+
+---
+
+## 6️⃣ File Operations (Tenant)
+
+### Generate Upload URL
+
+```bash
+curl -X POST http://localhost:8081/api/v1/files/upload-url \
+  -H "Authorization: Bearer <TENANT_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "test.pdf",
+    "file_size": 1024000,
+    "mime_type": "application/pdf"
+  }'
+```
+
+### Upload to S3 (Presigned URL)
+
+```bash
+curl -X PUT "<UPLOAD_URL>" \
+  -H "Content-Type: application/pdf" \
+  --data-binary "@/path/to/file.pdf"
+```
+
+### Complete Upload
+
+```bash
+curl -X POST http://localhost:8081/api/v1/files/complete-upload \
+  -H "Authorization: Bearer <TENANT_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "file_id": "<FILE_ID>"
+  }'
+```
+
+### List Files
+
+```bash
+curl -H "Authorization: Bearer <TENANT_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/files
+```
+
+### Generate Download URL
+
+```bash
+curl -H "Authorization: Bearer <TENANT_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/files/<FILE_ID>/download-url
+```
+
+### Download File
+
+```bash
+curl -o file.pdf "<DOWNLOAD_URL>"
+```
+
+### Delete File
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer <TENANT_ACCESS_TOKEN>" \
+  http://localhost:8081/api/v1/files/<FILE_ID>
+```
+
+---
+
+## 7️⃣ Recommended Test Order
+
+1. Health check
+2. Admin login
+3. Create tenant
+4. Tenant login
+5. Create sync token
+6. Generate upload URL
+7. Upload file
+8. Complete upload
+9. List / download / delete file
+
+---
+
+## ✅ Notes
+
+* Access token expiry: **15 minutes**
+* Refresh token expiry: **7 days**
+* Sync tokens are **long-lived & rotatable**
+* All tenant data is **S3-prefix isolated**
+* Backend runs with **IAM Role (no AWS creds in code)**
+
+---
+
+If you want next:
+
+* 📄 `README.md` version
+* 📦 Minimal Postman collection
+* 🧠 Sync-agent (systemd) auth flow doc
+* 🔐 Threat model for sync tokens
+
+Just say the word.

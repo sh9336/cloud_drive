@@ -1,0 +1,617 @@
+# System Design: File Storage Backend
+
+## 1. High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Clients                               │
+│         (Web App / Mobile / Sync Agent)                      │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+        ┌────────────┴──────────────┐
+        │                           │
+   ┌────▼─────┐            ┌───────▼──────┐
+   │   JWT    │            │ Sync Tokens  │
+   │   Auth   │            │   (Long-live)│
+   └────┬─────┘            └───────┬──────┘
+        │                          │
+        └────────────┬─────────────┘
+                     │
+        ┌────────────▼─────────────────┐
+        │   API Gateway / Router       │
+        │   (Gin Framework)            │
+        │  - Auth Middleware           │
+        │  - Rate Limiter              │
+        │  - CORS                      │
+        └────────────┬─────────────────┘
+                     │
+        ┌────────────▼─────────────────────────────┐
+        │      Service Layer                       │
+        ├──────────────────────────────────────────┤
+        │ • AuthService      (login, tokens)       │
+        │ • AdminService     (tenant management)   │
+        │ • TenantService    (profile, password)   │
+        │ • FileService      (upload/download)     │
+        │ • SyncTokenService (token lifecycle)     │
+        └────────────┬──────────────────────────────┘
+                     │
+        ┌────────────▼─────────────────────────────┐
+        │    Repository Layer (Data Access)        │
+        ├──────────────────────────────────────────┤
+        │ • AdminRepository                        │
+        │ • TenantRepository                       │
+        │ • FileRepository                         │
+        │ • TokenRepository                        │
+        │ • SyncTokenRepository                    │
+        │ • AuditRepository                        │
+        └────────────┬──────────────────────────────┘
+                     │
+        ┌────────────┼─────────────────┐
+        │            │                 │
+    ┌───▼────--┐ ┌───▼────-─┐ ┌───────▼───┐
+    │PostgreSQL│ │  S3/MinIO│ │Cache/Logs │
+    │Database  │ │ (Storage)│ │(Optional) │
+    └──────────┘ └──────────┘ └───────────┘
+```
+
+---
+
+## 2. Authentication Flow
+
+### JWT-Based Authentication (Web/Mobile)
+```
+┌──────────────┐
+│   Client     │
+└──────┬───────┘
+       │ 1. POST /auth/admin/login
+       │    { email, password }
+       │
+       ▼
+┌─────────────────────────┐
+│   AuthHandler           │
+│   AuthService           │
+└─────────┬───────────────┘
+          │ 2. Hash password check
+          │    Get admin from DB
+          │
+          ▼
+┌──────────────────────────────┐
+│   JWTService                 │
+│   Generate tokens:           │
+│   - access_token (15m)       │
+│   - refresh_token (7d)       │
+└─────────┬────────────────────┘
+          │
+          ▼ 3. Return tokens
+┌──────────────────────┐
+│   Client stores JWT  │
+│   in memory/session  │
+└──────────────────────┘
+
+4. Subsequent requests:
+   Authorization: Bearer <access_token>
+
+5. Token expired?
+   POST /auth/refresh
+   { refresh_token } → new access_token
+```
+
+### Sync Token Authentication (Service/Agent)
+```
+┌─────────────────────┐
+│  Sync Agent         │
+│  (Long-lived)       │
+└──────────┬──────────┘
+           │ Stored token: sync_<tenant_id>_<random>
+           │
+           ▼
+┌────────────────────────────────┐
+│  AuthMiddleware                │
+│  RequireAuthOrSync()           │
+│  - Extract token from header   │
+│  - Hash & lookup in DB         │
+│  - Check permissions (read/w/d)│
+└────────────┬───────────────────┘
+             │
+             ▼
+┌──────────────────────────────┐
+│  SyncTokenService            │
+│  Validate:                   │
+│  - Token exists              │
+│  - Not revoked               │
+│  - Not expired               │
+│  - Has permission            │
+└──────────┬────────────────────┘
+           │ ✅ Authorized
+           ▼
+```
+
+---
+
+## 3. Tenant Creation & Onboarding Flow
+
+```
+┌─────────────┐
+│Admin Client │
+└──────┬──────┘
+       │ 1. POST /admin/tenants (with JWT)
+       │    { email, full_name, company_name }
+       │
+       ▼
+┌──────────────────────────┐
+│  AdminHandler            │
+│  AdminService            │
+└─────────┬────────────────┘
+          │ 2. Check email doesn't exist
+          │    Generate temporary password
+          │    Hash password
+          │
+          ▼
+┌──────────────────────────────────┐
+│  TenantRepository                │
+│  INSERT into tenants table       │
+│  - id: UUID                      │
+│  - email                         │
+│  - password_hash                 │
+│  - s3_prefix: tenants/{uuid}/    │
+│  - must_change_password: true    │
+└─────────┬────────────────────────┘
+          │ 3. Create audit log
+          │
+          ▼
+┌──────────────────────────────┐
+│  AuditRepository             │
+│  Log: tenant_created         │
+└──────────────────────────────┘
+
+4. Response to Admin:
+   {
+     "tenant": { id, email, ... },
+     "temporary_password": "XyZ..."
+   }
+
+5. Admin gives credentials to tenant
+   (out-of-band: email, SMS, etc)
+
+6. Tenant logs in with temp password:
+   POST /auth/tenant/login
+   { email, password }
+   → Must change password (MustChangePassword=true)
+
+7. Tenant sets password:
+   POST /tenant/change-password
+   { old_password, new_password }
+```
+
+---
+
+## 4. File Upload Flow
+
+```
+┌──────────────────┐
+│   Tenant Client  │
+│   (authenticated)│
+└────────┬─────────┘
+         │ 1. POST /files/upload-url
+         │    { filename, file_size, mime_type }
+         │    Header: Authorization: Bearer <token>
+         │
+         ▼
+┌─────────────────────────────┐
+│  FileHandler                │
+│  FileService                │
+│  - Validate file size       │
+│  - Validate mime type       │
+│  - Extract tenant_id        │
+└────────┬────────────────────┘
+         │ 2. Create file record (pending)
+         │
+         ▼
+┌──────────────────────────────┐
+│  FileRepository              │
+│  INSERT into files:          │
+│  - id: UUID                  │
+│  - tenant_id: from JWT       │
+│  - original_filename         │
+│  - stored_filename: UUID     │
+│  - s3_key: tenants/{tid}/... │
+│  - upload_status: "pending"  │
+└────────┬─────────────────────┘
+         │ 3. Generate presigned PUT URL
+         │
+         ▼
+┌──────────────────────────────────┐
+│  S3Service                       │
+│  GeneratePresignedPutURL()       │
+│  - Valid for 15 minutes          │
+│  - POST to S3: file data         │
+└────────┬─────────────────────────┘
+         │ 4. Log audit event
+         │
+         ▼
+┌──────────────────────────────┐
+│  AuditRepository             │
+│  Log: upload_url_generated   │
+│  - tenant_id, file_id        │
+│  - filename, size            │
+└──────────────────────────────┘
+
+5. Response to Client:
+   {
+     "file_id": "uuid",
+     "upload_url": "https://s3/presigned?..."
+   }
+
+6. Client uploads directly to S3:
+   PUT <upload_url>
+   Body: binary file data
+   (No auth needed - presigned URL)
+
+7. Client marks upload complete:
+   POST /files/complete-upload
+   { file_id }
+
+8. Backend updates:
+   FileRepository.CompleteUpload()
+   - SET upload_status = "completed"
+   - SET upload_completed_at = NOW()
+   - Log audit event
+```
+
+---
+
+## 5. File Download Flow
+
+```
+┌──────────────────────┐
+│   Tenant Client      │
+│   (authenticated)    │
+└────────┬─────────────┘
+         │ 1. GET /files/{file_id}/download-url
+         │    Header: Authorization: Bearer <token>
+         │
+         ▼
+┌──────────────────────────────┐
+│  FileHandler                 │
+│  FileService                 │
+│  - Verify file ownership     │
+│  - Check file exists         │
+└────────┬─────────────────────┘
+         │ 2. Generate presigned GET URL
+         │
+         ▼
+┌──────────────────────────────────┐
+│  S3Service                       │
+│  GeneratePresignedGetURL()       │
+│  - Valid for 15 minutes          │
+└────────┬─────────────────────────┘
+         │ 3. Log audit event
+         │
+         ▼
+┌──────────────────────────────┐
+│  AuditRepository             │
+│  Log: download_url_generated │
+│  - tenant_id, file_id        │
+└──────────────────────────────┘
+
+4. Response:
+   {
+     "download_url": "https://s3/presigned?..."
+   }
+
+5. Client downloads:
+   GET <download_url>
+   (No auth needed - presigned URL)
+```
+
+---
+
+## 6. Data Model & Relationships
+
+```sql
+┌──────────────────────┐
+│     ADMINS           │
+├──────────────────────┤
+│ id (PK)              │
+│ email (UNIQUE)       │
+│ password_hash        │
+│ is_active            │
+│ created_at           │
+└──────────────────────┘
+         │ 1:N
+         │
+         ▼
+┌──────────────────────┐
+│    TENANTS           │
+├──────────────────────┤
+│ id (PK)              │
+│ email (UNIQUE)       │
+│ password_hash        │
+│ created_by → ADMINS  │
+│ is_active            │
+│ s3_prefix (isolated) │
+│ created_at           │
+└──────────────────────┘
+    │ 1:N
+    │
+    ├────────────────┬─────────────────┐
+    │                │                 │
+    ▼                ▼                 ▼
+┌─────────┐   ┌─────────────┐   ┌──────────────┐
+│  FILES  │   │SYNC_TOKENS  │   │REFRESH_TOKEN│
+├─────────┤   ├─────────────┤   ├──────────────┤
+│id (PK)  │   │id (PK)      │   │id (PK)      │
+│tenant_id│   │tenant_id    │   │token_hash   │
+│s3_key   │   │token_hash   │   │user_id      │
+│status   │   │permissions  │   │user_type    │
+│size     │   │expires_at   │   │expires_at   │
+│created..│   │created_at   │   │created_at   │
+└─────────┘   └─────────────┘   └──────────────┘
+
+┌──────────────────┐
+│  AUDIT_LOGS      │
+├──────────────────┤
+│id (PK)           │
+│actor_type        │
+│actor_id          │
+│action            │
+│resource_type     │
+│resource_id       │
+│metadata (JSONB)  │
+│created_at        │
+└──────────────────┘
+```
+
+---
+
+## 7. Request Lifecycle (Complete Example)
+
+### Upload file as tenant with Sync Token:
+
+```
+1. CLIENT REQUEST
+   PUT https://api.example.com/api/v1/files/upload-url
+   Headers:
+     Authorization: Bearer sync_<tenant_id>_<random>
+     Content-Type: application/json
+   Body: { filename: "report.pdf", file_size: 2048000, mime_type: "application/pdf" }
+
+2. ROUTER (cmd/server/main.go)
+   Matches route: files.POST("/upload-url", ...)
+   Pipeline: [RateLimit] → [AuthMiddleware] → [Handler]
+
+3. AUTH MIDDLEWARE (internal/middleware/auth_middleware.go)
+   RequireAuthOrSync()
+     ├─ Extract token from Authorization header
+     ├─ Try JWT decode → fail
+     ├─ Try sync token hash & lookup
+     ├─ Verify not revoked, not expired
+     ├─ Set context: user_id, user_type="tenant", auth_type="sync"
+     └─ c.Next()
+   
+   RequireTenant()
+     ├─ Check user_type == "tenant"
+     └─ c.Next()
+   
+   RequirePermission("write")
+     ├─ Check sync token has can_write=true
+     └─ c.Next()
+
+4. HANDLER (internal/handlers/file_handler.go)
+   GenerateUploadURL(c *gin.Context)
+     ├─ Bind request JSON
+     ├─ Extract tenant_id from context (c.Get("user_id"))
+     ├─ Call fileService.GenerateUploadURL(ctx, tenant_id, req)
+     └─ Return response
+
+5. SERVICE (internal/service/file_service.go)
+   GenerateUploadURL()
+     ├─ Validate file size (max 100MB)
+     ├─ Validate mime type (pdf, images, etc.)
+     ├─ Generate S3 key: tenants/{tenant_id}/uploads/{uuid}
+     ├─ Create File record in DB (status="pending")
+     │  └─ Call fileRepo.Create(ctx, file)
+     ├─ Generate presigned PUT URL (expires 15m)
+     │  └─ Call s3Service.GeneratePresignedPutURL(...)
+     ├─ Create audit log
+     │  └─ Call auditRepo.Create(ctx, ...)
+     └─ Return { file_id, upload_url }
+
+6. REPOSITORY (internal/repository/file_repository.go)
+   Create(ctx, file)
+     ├─ SQL: INSERT INTO files (id, tenant_id, ...) VALUES (...)
+     ├─ Execute on PostgreSQL
+     └─ Return err if exists
+
+7. STORAGE (internal/storage/s3.go)
+   GeneratePresignedPutURL(key, expiry)
+     ├─ Use AWS SDK S3 client
+     ├─ Generate presigned PUT request
+     ├─ Valid 15 minutes
+     └─ Return URL
+
+8. RESPONSE
+   {
+     "success": true,
+     "data": {
+       "file_id": "550e8400-e29b-41d4-a716-446655440000",
+       "upload_url": "https://s3.amazonaws.com/bucket/...?X-Amz-Signature=..."
+     }
+   }
+
+9. CLIENT UPLOADS TO S3
+   PUT <upload_url>
+   Content-Type: application/pdf
+   Body: [binary PDF data]
+   (No auth needed - presigned URL)
+
+10. CLIENT MARKS COMPLETE
+    POST /files/complete-upload
+    Body: { file_id }
+    
+    Backend:
+    ├─ Verify file ownership
+    ├─ Update file status="completed"
+    ├─ Log audit event
+    └─ Return success
+
+11. FILE STORED IN S3
+    Path: tenants/{tenant_id}/uploads/{file_id}
+    Isolated by S3 prefix
+    Only tenant can access via presigned URLs
+```
+
+---
+
+## 8. Security Architecture
+
+```
+┌─────────────────────────────────────────┐
+│         SECURITY LAYERS                 │
+└─────────────────────────────────────────┘
+
+Layer 1: AUTHENTICATION
+├─ JWT (stateless, short-lived 15m)
+├─ Sync Tokens (stateful, long-lived)
+├─ Password hashing (bcrypt)
+└─ Refresh tokens (revocable)
+
+Layer 2: AUTHORIZATION
+├─ User type checks (admin vs tenant)
+├─ Resource ownership checks (tenant_id match)
+├─ Permission checks (read/write/delete)
+└─ Admin-only endpoints
+
+Layer 3: DATA ISOLATION
+├─ S3 prefix per tenant: tenants/{id}/
+├─ Database queries filtered by tenant_id
+├─ No cross-tenant file access
+└─ Audit logs track all access
+
+Layer 4: TRANSPORT
+├─ HTTPS (TLS) in production
+├─ CORS enabled only for trusted origins
+├─ Rate limiting (10 req/sec, burst 20)
+└─ Request validation (JSON schema)
+
+Layer 5: DATABASE
+├─ Parameterized queries (SQL injection prevention)
+├─ Password hashes never logged
+├─ Audit log for compliance
+└─ Index on sensitive columns
+```
+
+---
+
+## 9. Deployment Architecture (Production)
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    Internet                          │
+└────────────────────┬─────────────────────────────────┘
+                     │
+┌────────────────────▼─────────────────────────────────┐
+│            AWS Load Balancer                         │
+│            (SSL/TLS termination)                     │
+└────────────────────┬─────────────────────────────────┘
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+   ┌────▼────┐             ┌─────▼────┐
+   │ Backend  │             │ Backend  │
+   │ Pod 1    │             │ Pod 2    │
+   │ (Go)     │             │ (Go)     │
+   └────┬─────┘             └─────┬────┘
+        │                         │
+        └────────────┬────────────┘
+                     │
+        ┌────────────▼────────────┐
+        │   AWS RDS PostgreSQL    │
+        │   (Multi-AZ)            │
+        │   Automated backups     │
+        └─────────────────────────┘
+
+        ┌────────────────────────────┐
+        │   AWS S3 (file storage)    │
+        │   - Encryption at rest     │
+        │   - Versioning enabled     │
+        │   - Presigned URLs         │
+        └────────────────────────────┘
+
+        ┌────────────────────────────┐
+        │   AWS IAM Role             │
+        │   (No hardcoded keys)      │
+        │   - S3 access              │
+        │   - KMS for encryption     │
+        └────────────────────────────┘
+
+        ┌────────────────────────────┐
+        │   CloudWatch Logs          │
+        │   - Application logs       │
+        │   - Audit trail            │
+        │   - Alarms                 │
+        └────────────────────────────┘
+```
+
+---
+
+## 10. Key Design Decisions
+
+| Decision | Why |
+|----------|-----|
+| **JWT + Sync Tokens** | JWT for UI (revoke on logout), Sync tokens for agents (long-lived, rotatable) |
+| **S3 Presigned URLs** | No need to proxy file uploads; direct client→S3; reduces backend load |
+| **Tenant S3 Prefix Isolation** | Simple, scalable multi-tenancy; IAM can enforce per-tenant policies |
+| **PostgreSQL** | ACID transactions, audit logs, built-in JSON support (JSONB) |
+| **Separate Token Hash Storage** | Hash tokens in DB; plain token shown only once to client |
+| **Audit Logs** | Compliance, security investigation, tenant activity tracking |
+| **Repository Pattern** | Abstraction for data access; easy to mock in tests |
+| **Service Layer** | Business logic decoupled from handlers; reusable across APIs |
+| **Middleware Pipeline** | Authentication, rate limiting, CORS applied in order |
+
+---
+
+## 11. Sync Token Lifecycle
+
+```
+CREATE → ROTATE → REVOKE
+  │
+  ├─ CREATE
+  │  ├─ Admin creates sync token for tenant
+  │  ├─ Generate random token: sync_<tenant_id>_<random>
+  │  ├─ Hash & store in DB
+  │  ├─ Return plain token (once!)
+  │  └─ Set permissions: read/write/delete
+  │
+  ├─ ACTIVE (used for 30+ days)
+  │  ├─ Client includes in Authorization header
+  │  ├─ Middleware validates hash
+  │  ├─ Increments stats: total_requests, bytes_up/down
+  │  └─ No need to rotate
+  │
+  ├─ ROTATE (when compromise suspected)
+  │  ├─ Admin initiates rotation
+  │  ├─ Generate new token
+  │  ├─ Set grace period (default 7 days)
+  │  ├─ Old token still works during grace period
+  │  ├─ After grace, old token auto-revoked
+  │  └─ Log rotation event
+  │
+  └─ REVOKE (explicit disable)
+     ├─ Admin revokes immediately
+     ├─ No grace period
+     ├─ Client requests fail with 401
+     └─ Reason logged (compromised, no longer needed, etc.)
+```
+
+---
+
+## Summary
+
+This backend system is designed with the following principles:
+- **Scalability**: Microservices-ready, horizontal scaling support
+- **Security**: Multi-layered authentication, authorization, and data isolation
+- **Multi-tenancy**: Tenant-specific data isolation via S3 prefixes and DB filtering
+- **Auditability**: Complete audit trail for compliance and security investigation
+- **Developer Experience**: Clean separation of concerns (handlers → services → repositories)
+- **Performance**: Direct S3 uploads via presigned URLs, reducing backend load

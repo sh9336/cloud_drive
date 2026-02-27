@@ -1,0 +1,80 @@
+{
+  "version": "1.0.0",
+  "root_path": "tenants/{tenant_id}/",
+
+  "root_permissions": {
+    "allow_files": true,
+    "allow_folders": false,
+    "can_upload": true,
+    "can_delete": true,
+    "can_replace": true,
+    "can_list": true
+  },
+
+  "nodes": [
+    {
+      "type": "folder",
+      "path": "uploads",
+      "is_required": true,
+      "permissions": {
+        "allow_files": true,
+        "allow_folders": false,
+        "can_upload": true,
+        "can_delete": true,
+        "can_replace": true,
+        "can_list": true
+      },
+      "metadata": {
+        "description": "User-uploaded files"
+      }
+    },
+    {
+      "type": "folder",
+      "path": "assets",
+      "is_required": true,
+      "permissions": {
+        "allow_files": true,
+        "allow_folders": false,
+        "can_upload": true,
+        "can_delete": true,
+        "can_replace": true,
+        "can_list": true
+      },
+      "metadata": {
+        "description": "Static assets and resources"
+      }
+    },
+    {
+      "type": "folder",
+      "path": "schedules",
+      "is_required": true,
+      "permissions": {
+        "allow_files": true,
+        "allow_folders": false,
+        "can_upload": true,
+        "can_delete": true,
+        "can_replace": true,
+        "can_list": true
+      },
+      "metadata": {
+        "description": "Schedule and sync configuration files"
+      }
+    },
+    {
+      "type": "folder",
+      "path": "root",
+      "is_required": false,
+      "permissions": {
+        "allow_files": true,
+        "allow_folders": false,
+        "can_upload": true,
+        "can_delete": true,
+        "can_replace": true,
+        "can_list": true
+      },
+      "metadata": {
+        "description": "Tenant root directory - files stored directly at tenants/{tenant_id}/"
+      }
+    }
+  ]
+}
