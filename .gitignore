@@ -18,7 +18,6 @@ go.work
 # Environment files (NEVER commit secrets!)
 .env
 .env.*
-!.env.dev
 !.env.prod.example
 !.env.example
 
