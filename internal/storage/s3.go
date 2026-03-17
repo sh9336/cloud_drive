@@ -2,6 +2,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -133,4 +134,26 @@ func (s *S3Service) HeadObject(ctx context.Context, key string) error {
 	})
 
 	return err
+}
+// PutObject uploads a file to S3
+func (s *S3Service) PutObject(ctx context.Context, key string, body []byte, contentType string) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucketName),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(body),
+		ContentType: aws.String(contentType),
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to put object: %w", err)
+	}
+
+	return nil
+}
+
+// GetBucketCors retrieves the CORS configuration for the bucket
+func (s *S3Service) GetBucketCors(ctx context.Context) (*s3.GetBucketCorsOutput, error) {
+	return s.client.GetBucketCors(ctx, &s3.GetBucketCorsInput{
+		Bucket: aws.String(s.bucketName),
+	})
 }

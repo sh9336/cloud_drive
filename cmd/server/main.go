@@ -237,6 +237,7 @@ func setupRouter(
 	files.Use(authMiddleware.EnforceMustChangePassword()) // Enforce password change on first login
 	files.Use(rateLimiter.RateLimitByUser())
 	{
+		files.POST("/upload", authMiddleware.RequirePermission("write"), fileHandler.ProxyUpload)
 		files.POST("/upload-url", authMiddleware.RequirePermission("write"), fileHandler.GenerateUploadURL)
 		files.POST("/complete-upload", authMiddleware.RequirePermission("write"), fileHandler.CompleteUpload)
 		files.GET("", authMiddleware.RequirePermission("read"), fileHandler.ListFiles)

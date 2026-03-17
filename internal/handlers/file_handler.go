@@ -2,6 +2,8 @@
 package handlers
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 
 	"backend/internal/middleware"
@@ -64,6 +66,59 @@ func (h *FileHandler) CompleteUpload(c *gin.Context) {
 
 	utils.SuccessResponse(c, http.StatusOK, "Upload completed", nil)
 }
+
+func (h *FileHandler) ProxyUpload(c *gin.Context) {
+	// Extract multipart form
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, fmt.Errorf("file is required"))
+		return
+	}
+
+	uploadTo := c.PostForm("upload_to")
+	if uploadTo == "" {
+		uploadTo = "root"
+	}
+
+	tenantID, err := middleware.GetUserID(c)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	// Read file content
+	file, err := fileHeader.Open()
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	defer file.Close()
+
+	body, err := io.ReadAll(file)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	// Single call to service to handle DB + Storage
+	fileRecord, err := h.fileService.DirectUpload(
+		c.Request.Context(),
+		tenantID,
+		fileHeader.Filename,
+		fileHeader.Size,
+		fileHeader.Header.Get("Content-Type"),
+		uploadTo,
+		body,
+	)
+
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	utils.SuccessResponse(c, http.StatusCreated, "File uploaded successfully via proxy", fileRecord)
+}
+
 
 func (h *FileHandler) ListFiles(c *gin.Context) {
 	tenantID, err := middleware.GetUserID(c)

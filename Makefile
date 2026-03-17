@@ -60,8 +60,11 @@ docker-down:
 	docker compose down
 
 docker-restart:
-	docker compose build backend
-	docker compose up -d backend
+	docker compose up -d --build backend
+	docker image prune -f
+
+docker-prune:
+	docker system prune -af --volumes
 
 docker-build:
 	docker compose build

@@ -323,3 +323,72 @@ func (s *FileService) resolveLogicalPath(file *models.File) string {
 	}
 	return file.UploadTo + "/" + file.OriginalFilename
 }
+
+// DirectUpload handles proxying the file upload through the backend
+func (s *FileService) DirectUpload(ctx context.Context, tenantID uuid.UUID, filename string, fileSize int64, mimeType string, uploadTo string, body []byte) (*models.File, error) {
+	// Validate file
+	if err := validator.ValidateFileUpload(filename, fileSize, mimeType, s.maxFileSize, s.allowedTypes); err != nil {
+		return nil, err
+	}
+
+	// Validate upload destination
+	isValid, errMsg := s.template.ValidateUploadDestination(uploadTo)
+	if !isValid {
+		return nil, fmt.Errorf("invalid upload destination: %s", errMsg)
+	}
+
+	// Generate unique filename
+	ext := filepath.Ext(filename)
+	storedFilename := fmt.Sprintf("%s%s", uuid.New().String(), ext)
+
+	// Resolve S3 path
+	s3Key := s.template.ResolveS3Path(tenantID.String(), uploadTo, storedFilename)
+
+	// Create file record (pending)
+	file := &models.File{
+		ID:               uuid.New(),
+		TenantID:         tenantID,
+		OriginalFilename: filename,
+		StoredFilename:   storedFilename,
+		S3Key:            s3Key,
+		FileSize:         fileSize,
+		MimeType:         mimeType,
+		UploadTo:         uploadTo,
+		UploadStatus:     "pending",
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	if err := s.fileRepo.Create(ctx, file); err != nil {
+		return nil, err
+	}
+
+	// Upload directly to S3 from backend
+	if err := s.s3Service.PutObject(ctx, s3Key, body, mimeType); err != nil {
+		return nil, fmt.Errorf("failed to upload to storage: %w", err)
+	}
+
+	// Mark as complete immediately
+	if err := s.fileRepo.MarkUploadComplete(ctx, file.ID); err != nil {
+		return nil, err
+	}
+
+	// Refresh file state to get completion timestamps
+	file, _ = s.fileRepo.GetByID(ctx, file.ID, tenantID)
+
+	_ = s.auditRepo.Create(ctx, models.CreateAuditLogRequest{
+		ActorType:    "tenant",
+		ActorID:      &tenantID,
+		Action:       "proxy_upload_completed",
+		ResourceType: utils.StringPtr("file"),
+		ResourceID:   &file.ID,
+		Metadata: map[string]interface{}{
+			"filename": filename,
+			"size":     fileSize,
+		},
+		Status: "success",
+	})
+
+	return file, nil
+}
+
