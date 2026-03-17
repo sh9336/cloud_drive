@@ -23,14 +23,14 @@ func (r *TenantRepository) Create(ctx context.Context, tenant *models.Tenant) er
 	query := `
 		INSERT INTO tenants (id, email, password_hash, full_name, company_name, 
 			password_changed_at, password_expires_at, must_change_password, 
-			is_active, s3_prefix, created_by, created_at, updated_at, template_initialized_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			is_active, s3_prefix, created_by, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		tenant.ID, tenant.Email, tenant.PasswordHash, tenant.FullName,
 		tenant.CompanyName, tenant.PasswordChangedAt, tenant.PasswordExpiresAt,
 		tenant.MustChangePassword, tenant.IsActive, tenant.S3Prefix,
-		tenant.CreatedBy, tenant.CreatedAt, tenant.UpdatedAt, tenant.TemplateInitializedAt,
+		tenant.CreatedBy, tenant.CreatedAt, tenant.UpdatedAt,
 	)
 	return err
 }
@@ -40,7 +40,7 @@ func (r *TenantRepository) GetByEmail(ctx context.Context, email string) (*model
 		SELECT id, email, password_hash, full_name, company_name, password_changed_at,
 			password_expires_at, must_change_password, is_active, disabled_at,
 			disabled_reason, s3_prefix, created_by, created_at, updated_at,
-			last_login_at, last_login_ip, template_initialized_at
+			last_login_at, last_login_ip
 		FROM tenants
 		WHERE email = $1
 	`
@@ -51,7 +51,6 @@ func (r *TenantRepository) GetByEmail(ctx context.Context, email string) (*model
 		&tenant.MustChangePassword, &tenant.IsActive, &tenant.DisabledAt,
 		&tenant.DisabledReason, &tenant.S3Prefix, &tenant.CreatedBy,
 		&tenant.CreatedAt, &tenant.UpdatedAt, &tenant.LastLoginAt, &tenant.LastLoginIP,
-		&tenant.TemplateInitializedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("tenant not found")
@@ -64,7 +63,7 @@ func (r *TenantRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.T
 		SELECT id, email, password_hash, full_name, company_name, password_changed_at,
 			password_expires_at, must_change_password, is_active, disabled_at,
 			disabled_reason, s3_prefix, created_by, created_at, updated_at,
-			last_login_at, last_login_ip, template_initialized_at
+			last_login_at, last_login_ip
 		FROM tenants
 		WHERE id = $1
 	`
@@ -75,7 +74,6 @@ func (r *TenantRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.T
 		&tenant.MustChangePassword, &tenant.IsActive, &tenant.DisabledAt,
 		&tenant.DisabledReason, &tenant.S3Prefix, &tenant.CreatedBy,
 		&tenant.CreatedAt, &tenant.UpdatedAt, &tenant.LastLoginAt, &tenant.LastLoginIP,
-		&tenant.TemplateInitializedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("tenant not found")
@@ -86,7 +84,7 @@ func (r *TenantRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.T
 func (r *TenantRepository) List(ctx context.Context) ([]*models.Tenant, error) {
 	query := `
 		SELECT id, email, full_name, company_name, is_active, s3_prefix,
-			created_at, last_login_at, template_initialized_at
+			created_at, last_login_at
 		FROM tenants
 		ORDER BY created_at DESC
 	`
@@ -102,7 +100,6 @@ func (r *TenantRepository) List(ctx context.Context) ([]*models.Tenant, error) {
 		err := rows.Scan(
 			&tenant.ID, &tenant.Email, &tenant.FullName, &tenant.CompanyName,
 			&tenant.IsActive, &tenant.S3Prefix, &tenant.CreatedAt, &tenant.LastLoginAt,
-			&tenant.TemplateInitializedAt,
 		)
 		if err != nil {
 			return nil, err
