@@ -23,8 +23,9 @@ type Tenant struct {
 	CreatedBy          uuid.UUID  `json:"created_by"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
-	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
-	LastLoginIP        *string    `json:"last_login_ip,omitempty"`
+	LastLoginAt           *time.Time `json:"last_login_at,omitempty"`
+	LastLoginIP           *string    `json:"last_login_ip,omitempty"`
+	TemplateInitializedAt *time.Time `json:"template_initialized_at,omitempty"`
 }
 
 type CreateTenantRequest struct {
