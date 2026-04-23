@@ -8,19 +8,36 @@ import (
 	"fmt"
 	"time"
 
+	"backend/internal/database"
 	"backend/internal/models"
 )
 
 type AuditRepository struct {
-	db *sql.DB
+	db          *sql.DB
+	redisClient *database.RedisClient
 }
 
-func NewAuditRepository(db *sql.DB) *AuditRepository {
-	return &AuditRepository{db: db}
+func NewAuditRepository(db *sql.DB, redisClient *database.RedisClient) *AuditRepository {
+	repo := &AuditRepository{db: db, redisClient: redisClient}
+	if redisClient != nil {
+		go repo.startBackgroundWorker()
+	}
+	return repo
 }
 
 func (r *AuditRepository) Create(ctx context.Context, req models.CreateAuditLogRequest) error {
-	var metadata interface{}
+	if r.redisClient != nil {
+		// Push to redis for async processing
+		data, err := json.Marshal(req)
+		if err == nil {
+			return r.redisClient.RPush(ctx, "audit_queue", data).Err()
+		}
+	}
+	// Fallback to synchronous insert
+	return r.createSync(ctx, req)
+}
+
+func (r *AuditRepository) createSync(ctx context.Context, req models.CreateAuditLogRequest) error {	var metadata interface{}
 	if req.Metadata != nil {
 		m, err := json.Marshal(req.Metadata)
 		if err != nil {
@@ -129,4 +146,18 @@ func (r *AuditRepository) Cleanup(ctx context.Context, days int) (int64, error) 
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+func (r *AuditRepository) startBackgroundWorker() {
+	for {
+		// Wait up to 5 seconds for an item to appear in the queue
+		result, err := r.redisClient.BLPop(context.Background(), 5*time.Second, "audit_queue").Result()
+		if err == nil && len(result) == 2 {
+			var req models.CreateAuditLogRequest
+			if err := json.Unmarshal([]byte(result[1]), &req); err == nil {
+				// We don't care about the error or context here as it's a background process
+				_ = r.createSync(context.Background(), req)
+			}
+		}
+	}
 }

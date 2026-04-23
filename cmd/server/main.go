@@ -42,6 +42,13 @@ func main() {
 	}
 	defer db.Close()
 
+	// Initialize Redis
+	redisClient, err := database.NewRedisClient(cfg.GetRedisAddr(), cfg.Redis.Password, cfg.Redis.DB)
+	if err != nil {
+		log.Fatalf("Failed to connect to redis: %v", err)
+	}
+	defer redisClient.Close()
+
 	// Initialize S3 service
 	s3Service, err := storage.NewS3Service(
 		cfg.AWS.Region,
@@ -69,15 +76,15 @@ func main() {
 	adminRepo := repository.NewAdminRepository(db.DB)
 	tenantRepo := repository.NewTenantRepository(db.DB)
 	fileRepo := repository.NewFileRepository(db.DB)
-	auditRepo := repository.NewAuditRepository(db.DB)
+	auditRepo := repository.NewAuditRepository(db.DB, redisClient)
 	tokenRepo := repository.NewTokenRepository(db.DB)
 	syncTokenRepo := repository.NewSyncTokenRepository(db.DB)
 
 	// Initialize services
 	authService := service.NewAuthService(adminRepo, tenantRepo, tokenRepo, auditRepo, jwtService)
-	adminService := service.NewAdminService(adminRepo, tenantRepo, tokenRepo, auditRepo)
-	tenantService := service.NewTenantService(tenantRepo, tokenRepo, auditRepo)
-	syncTokenService := service.NewSyncTokenService(syncTokenRepo, tenantRepo, auditRepo)
+	adminService := service.NewAdminService(adminRepo, tenantRepo, tokenRepo, auditRepo, redisClient)
+	tenantService := service.NewTenantService(tenantRepo, tokenRepo, auditRepo, redisClient)
+	syncTokenService := service.NewSyncTokenService(syncTokenRepo, tenantRepo, auditRepo, redisClient)
 	fileService := service.NewFileService(
 		fileRepo,
 		tenantRepo,
@@ -95,7 +102,7 @@ func main() {
 	tenantHandler := handlers.NewTenantHandler(tenantService)
 	syncTokenHandler := handlers.NewSyncTokenHandler(syncTokenService)
 	fileHandler := handlers.NewFileHandler(fileService)
-	healthHandler := handlers.NewHealthHandler(db)
+	healthHandler := handlers.NewHealthHandler(db, redisClient)
 	configHandler := handlers.NewConfigHandler(template)
 
 	// Initialize middleware

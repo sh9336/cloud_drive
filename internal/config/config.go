@@ -15,6 +15,7 @@ type Config struct {
 	AWS      AWSConfig
 	JWT      JWTConfig
 	Storage  StorageConfig
+	Redis    RedisConfig
 }
 
 type ServerConfig struct {
@@ -57,6 +58,14 @@ type StorageConfig struct {
 	PresignedExpiry  time.Duration
 	MaxFileSize      int64
 	AllowedMimeTypes []string
+}
+
+type RedisConfig struct {
+	Host     string
+	Port     string
+	Password string
+	DB       int
+	RedisURL string // Production support
 }
 
 func Load() (*Config, error) {
@@ -112,6 +121,13 @@ func Load() (*Config, error) {
 				"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo",
 			},
 		},
+		Redis: RedisConfig{
+			Host:     getEnv("REDIS_HOST", "localhost"),
+			Port:     getEnv("REDIS_PORT", "6379"),
+			Password: getEnv("REDIS_PASSWORD", ""),
+			DB:       parseInt(getEnv("REDIS_DB", "0")),
+			RedisURL: getEnv("REDIS_URL", ""),
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -152,6 +168,13 @@ func (c *Config) GetDSN() string {
 		c.Database.DBName,
 		c.Database.SSLMode,
 	)
+}
+
+func (c *Config) GetRedisAddr() string {
+	if c.Redis.RedisURL != "" {
+		return c.Redis.RedisURL
+	}
+	return fmt.Sprintf("%s:%s", c.Redis.Host, c.Redis.Port)
 }
 
 func (c *Config) IsDevelopment() bool {

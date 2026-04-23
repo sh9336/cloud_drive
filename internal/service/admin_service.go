@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"backend/internal/auth"
+	"backend/internal/database"
 	"backend/internal/models"
 	"backend/internal/repository"
 	"backend/internal/utils"
@@ -16,9 +17,10 @@ import (
 
 type AdminService struct {
 	adminRepo  *repository.AdminRepository
-	tenantRepo *repository.TenantRepository
-	tokenRepo  *repository.TokenRepository
-	auditRepo  *repository.AuditRepository
+	tenantRepo  *repository.TenantRepository
+	tokenRepo   *repository.TokenRepository
+	auditRepo   *repository.AuditRepository
+	redisClient *database.RedisClient
 }
 
 func NewAdminService(
@@ -26,12 +28,14 @@ func NewAdminService(
 	tenantRepo *repository.TenantRepository,
 	tokenRepo *repository.TokenRepository,
 	auditRepo *repository.AuditRepository,
+	redisClient *database.RedisClient,
 ) *AdminService {
 	return &AdminService{
-		adminRepo:  adminRepo,
-		tenantRepo: tenantRepo,
-		tokenRepo:  tokenRepo,
-		auditRepo:  auditRepo,
+		adminRepo:   adminRepo,
+		tenantRepo:  tenantRepo,
+		tokenRepo:   tokenRepo,
+		auditRepo:   auditRepo,
+		redisClient: redisClient,
 	}
 }
 
@@ -114,6 +118,10 @@ func (s *AdminService) ResetTenantPassword(ctx context.Context, tenantID, adminI
 		return "", err
 	}
 
+	if s.redisClient != nil {
+		_ = s.redisClient.Del(ctx, fmt.Sprintf("tenant_profile:%s", tenantID.String())).Err()
+	}
+
 	_ = s.tokenRepo.RevokeAllForUser(ctx, "tenant", tenantID, "password_reset_by_admin")
 
 	_ = s.auditRepo.Create(ctx, models.CreateAuditLogRequest{
@@ -143,6 +151,10 @@ func (s *AdminService) UpdateTenantStatus(ctx context.Context, tenantID, adminID
 
 	if err := s.tenantRepo.UpdateStatus(ctx, tenantID, *req.IsActive, req.DisabledReason); err != nil {
 		return err
+	}
+
+	if s.redisClient != nil {
+		_ = s.redisClient.Del(ctx, fmt.Sprintf("tenant_profile:%s", tenantID.String())).Err()
 	}
 
 	if !*req.IsActive {
@@ -278,6 +290,10 @@ func (s *AdminService) DeleteTenant(ctx context.Context, tenantID, adminID uuid.
 	// 2. Delete tenant (this will cascade delete files and sync tokens in DB)
 	if err := s.tenantRepo.Delete(ctx, tenantID); err != nil {
 		return err
+	}
+
+	if s.redisClient != nil {
+		_ = s.redisClient.Del(ctx, fmt.Sprintf("tenant_profile:%s", tenantID.String())).Err()
 	}
 
 	// 3. Audit log

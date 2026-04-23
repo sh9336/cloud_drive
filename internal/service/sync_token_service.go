@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+	"encoding/json"
 
+	"backend/internal/database"
 	"backend/internal/models"
 	"backend/internal/repository"
 	"backend/internal/utils"
@@ -20,17 +22,20 @@ type SyncTokenService struct {
 	syncTokenRepo *repository.SyncTokenRepository
 	tenantRepo    *repository.TenantRepository
 	auditRepo     *repository.AuditRepository
+	redisClient   *database.RedisClient
 }
 
 func NewSyncTokenService(
 	syncTokenRepo *repository.SyncTokenRepository,
 	tenantRepo *repository.TenantRepository,
 	auditRepo *repository.AuditRepository,
+	redisClient *database.RedisClient,
 ) *SyncTokenService {
 	return &SyncTokenService{
 		syncTokenRepo: syncTokenRepo,
 		tenantRepo:    tenantRepo,
 		auditRepo:     auditRepo,
+		redisClient:   redisClient,
 	}
 }
 
@@ -117,6 +122,22 @@ func (s *SyncTokenService) CreateSyncToken(ctx context.Context, req models.Creat
 // ValidateSyncToken validates and returns sync token claims
 func (s *SyncTokenService) ValidateSyncToken(ctx context.Context, token string) (*models.SyncTokenClaims, error) {
 	tokenHash := s.HashToken(token)
+	cacheKey := fmt.Sprintf("sync_token:%s", tokenHash)
+
+	// Try to get from Redis first
+	if s.redisClient != nil {
+		cachedData, err := s.redisClient.Get(ctx, cacheKey).Result()
+		if err == nil {
+			var claims models.SyncTokenClaims
+			if err := json.Unmarshal([]byte(cachedData), &claims); err == nil {
+				// Update last used asynchronously to avoid blocking
+				go func() {
+					_ = s.syncTokenRepo.UpdateLastUsed(context.Background(), claims.TokenID)
+				}()
+				return &claims, nil
+			}
+		}
+	}
 
 	syncToken, err := s.syncTokenRepo.GetByHash(ctx, tokenHash)
 	if err != nil {
@@ -141,13 +162,27 @@ func (s *SyncTokenService) ValidateSyncToken(ctx context.Context, token string) 
 	// Update last used
 	_ = s.syncTokenRepo.UpdateLastUsed(ctx, syncToken.ID)
 
-	return &models.SyncTokenClaims{
+	claims := &models.SyncTokenClaims{
 		TokenID:   syncToken.ID,
 		TenantID:  syncToken.TenantID,
 		CanRead:   syncToken.CanRead,
 		CanWrite:  syncToken.CanWrite,
 		CanDelete: syncToken.CanDelete,
-	}, nil
+	}
+
+	// Cache the valid claims for 5 minutes
+	if s.redisClient != nil {
+		if claimsData, err := json.Marshal(claims); err == nil {
+			timeUntilExpiry := time.Until(syncToken.ExpiresAt)
+			cacheTTL := 5 * time.Minute
+			if timeUntilExpiry < cacheTTL {
+				cacheTTL = timeUntilExpiry
+			}
+			_ = s.redisClient.Set(ctx, cacheKey, claimsData, cacheTTL).Err()
+		}
+	}
+
+	return claims, nil
 }
 
 // ListAllSyncTokens lists all sync tokens (admin only)
@@ -185,6 +220,11 @@ func (s *SyncTokenService) RotateSyncToken(ctx context.Context, tokenID, adminID
 
 	plainToken := fmt.Sprintf("sync_%s_%s", oldToken.TenantID.String(), randomPart)
 	tokenHash := s.HashToken(plainToken)
+
+	// Invalidate old token cache
+	if s.redisClient != nil {
+		_ = s.redisClient.Del(ctx, fmt.Sprintf("sync_token:%s", oldToken.TokenHash)).Err()
+	}
 
 	// Create new sync token
 	newToken := &models.SyncToken{
@@ -252,6 +292,11 @@ func (s *SyncTokenService) RevokeSyncToken(ctx context.Context, tokenID, adminID
 
 	if err := s.syncTokenRepo.Revoke(ctx, tokenID, adminID, reason); err != nil {
 		return err
+	}
+
+	// Invalidate cache
+	if s.redisClient != nil {
+		_ = s.redisClient.Del(ctx, fmt.Sprintf("sync_token:%s", token.TokenHash)).Err()
 	}
 
 	// Audit log
@@ -337,6 +382,11 @@ func (s *SyncTokenService) DeleteSyncToken(ctx context.Context, tokenID, adminID
 	err = s.syncTokenRepo.Delete(ctx, tokenID)
 	if err != nil {
 		return err
+	}
+
+	// Invalidate cache
+	if s.redisClient != nil {
+		_ = s.redisClient.Del(ctx, fmt.Sprintf("sync_token:%s", token.TokenHash)).Err()
 	}
 
 	// Audit log

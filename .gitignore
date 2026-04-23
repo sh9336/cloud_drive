@@ -18,9 +18,9 @@ go.work
 # Environment files (NEVER commit secrets!)
 .env
 .env.*
-!.env.prod.example
-!.env.example
-
+.env.prod.example
+.env.example
+.env.dev
 # Root binaries
 /main
 /server

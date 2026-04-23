@@ -67,12 +67,27 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env.dev
     ports:
       - "8082:8080"  # HOST:CONTAINER - exposes port 8082 on your machine
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - file-storage-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: file-storage-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

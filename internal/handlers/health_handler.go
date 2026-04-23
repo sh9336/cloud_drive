@@ -12,12 +12,14 @@ import (
 )
 
 type HealthHandler struct {
-	db *database.DB
+	db    *database.DB
+	redis *database.RedisClient
 }
 
-func NewHealthHandler(db *database.DB) *HealthHandler {
+func NewHealthHandler(db *database.DB, redis *database.RedisClient) *HealthHandler {
 	return &HealthHandler{
-		db: db,
+		db:    db,
+		redis: redis,
 	}
 }
 
@@ -41,6 +43,19 @@ func (h *HealthHandler) Health(c *gin.Context) {
 		}
 	}
 
+	// Check Redis
+	if err := h.redis.HealthCheck(ctx); err != nil {
+		status = "unhealthy"
+		checks["redis"] = map[string]string{
+			"status": "unhealthy",
+			"error":  err.Error(),
+		}
+	} else {
+		checks["redis"] = map[string]string{
+			"status": "healthy",
+		}
+	}
+
 	httpStatus := http.StatusOK
 	if status == "unhealthy" {
 		httpStatus = http.StatusServiceUnavailable
@@ -58,6 +73,11 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 	defer cancel()
 
 	if err := h.db.HealthCheck(ctx); err != nil {
+		utils.ErrorResponse(c, http.StatusServiceUnavailable, err)
+		return
+	}
+
+	if err := h.redis.HealthCheck(ctx); err != nil {
 		utils.ErrorResponse(c, http.StatusServiceUnavailable, err)
 		return
 	}
