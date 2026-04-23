@@ -19,7 +19,7 @@ go.work
 .env
 .env.*
 .env.prod.example
-.env.example
+!.env.example
 .env.dev
 # Root binaries
 /main
